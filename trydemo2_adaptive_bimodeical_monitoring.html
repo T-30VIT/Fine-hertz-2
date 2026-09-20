@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Adaptive Biomedical Monitoring System - STM32 Interface</title>
+    <!-- Tailwind CSS for UI styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@300;400;500;600;700&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0b0f17;
+            color: #e2e8f0;
+        }
+        
+        .font-mono {
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* Custom ECG/PPG Grid styling */
+        .canvas-container {
+            background-color: #05080e;
+            background-image: 
+                linear-gradient(rgba(15, 23, 42, 0.6) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(15, 23, 42, 0.6) 1px, transparent 1px),
+                linear-gradient(rgba(30, 41, 59, 0.3) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(30, 41, 59, 0.3) 1px, transparent 1px);
+            background-size: 50px 50px, 50px 50px, 10px 10px, 10px 10px;
+        }
+
+        /* Pulse Animations */
+        @keyframes pulse-glow {
+            0%, 100% { opacity: 1; filter: drop-shadow(0 0 8px rgba(16, 185, 129, 0.6)); }
+            50% { opacity: 0.6; filter: drop-shadow(0 0 2px rgba(16, 185, 129, 0.2)); }
+        }
+        
+        .vital-pulse {
+            animation: pulse-glow 2s infinite ease-in-out;
+        }
+        
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0f172a;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #1e293b;
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #334155;
+        }
+    </style>
+</head>
+<body class="h-screen overflow-hidden flex flex-col">
+
+    <!-- Top Navigation Bar -->
+    <header class="h-16 border-b border-slate-800 bg-slate-950/80 backdrop-blur px-6 flex items-center justify-between z-10">
+        <div class="flex items-center space-x-3">
+            <div class="p-2 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-emerald-400">
+                <i data-lucide="activity" class="w-6 h-6 vital-pulse"></i>
+            </div>
+            <div>
+                <h1 class="font-bold text-lg text-slate-100 tracking-wide flex items-center gap-2">
+                    BIOMED-RL <span class="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded border border-emerald-500/30">STM32 Direct</span>
+                </h1>
+                <p class="text-xs text-slate-400">Adaptive Edge-Computing Monitor</p>
+            </div>
+        </div>
+
+        <div class="flex items-center space-x-4">
+            <!-- Hardware Connection Status -->
+            <div id="connection-status-pill" class="flex items-center space-x-2 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-full text-xs">
+                <span id="status-dot" class="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
+                <span id="status-text" class="text-slate-300 font-mono">Disconnected</span>
+            </div>
+
+            <!-- Connect STM32 Web Serial Button -->
+            <button id="btn-connect" onclick="toggleSerialConnection()" class="flex items-center space-x-2 bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-all shadow-lg shadow-emerald-950/40">
+                <i data-lucide="usb" class="w-4 h-4"></i>
+                <span id="btn-connect-text">Connect STM32</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <div class="flex-1 flex overflow-hidden">
+        
+        <!-- Sidebar - Controls & Parameters -->
+        <aside class="w-80 border-r border-slate-800 bg-slate-950/50 p-4 flex flex-col justify-between overflow-y-auto space-y-4">
+            <div class="space-y-4">
+                
+                <!-- RL / Sampling Mode Panel -->
+                <div class="bg-slate-900/80 border border-slate-800 rounded-xl p-4 space-y-3">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">RL Agent Control</span>
+                        <i data-lucide="cpu" class="w-4 h-4 text-emerald-400"></i>
+                    </div>
+
+                    <div class="space-y-2">
+                        <label class="text-xs text-slate-400">Operating Mode</label>
+                        <select id="rl-mode-select" onchange="changeRLMode(this.value)" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm text-slate-200 focus:outline-none focus:border-emerald-500">
+                            <option value="AUTO">Autonomous RL Policy (Active)</option>
+                            <option value="MANUAL_0">Manual: Ultra Low Power (10Hz)</option>
+                            <option value="MANUAL_1">Manual: Standard Mode (50Hz)</option>
+                            <option value="MANUAL_2">Manual: High Fidelity (250Hz)</option>
+                            <option value="MANUAL_3">Manual: Burst/Diagnostic (500Hz)</option>
+                        </select>
+                    </div>
+
+                    <div class="pt-2 border-t border-slate-800/80 space-y-2">
+                        <div class="flex justify-between text-xs">
+                            <span class="text-slate-400">Target STM32 Speed Byte:</span>
+                            <span id="tx-command-display" class="font-mono text-emerald-400 font-bold">'1' (50Hz)</span>
+                        </div>
+                        <div class="flex justify-between text-xs">
+                            <span class="text-slate-400">Q-Table Current State:</span>
+                            <span id="rl-state-display" class="font-mono text-cyan-400">NORMAL_STABLE</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Simulation / Scenario Fallback -->
+                <div class="bg-slate-900/80 border border-slate-800 rounded-xl p-4 space-y-3">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Patient Simulator (Fallback)</span>
+                        <i data-lucide="sliders" class="w-4 h-4 text-cyan-400"></i>
+                    </div>
+                    
+                    <p class="text-xs text-slate-500">Active when no STM32 device is connected via USB.</p>
+
+                    <div class="grid grid-cols-2 gap-2">
+                        <button onclick="setScenario('NORMAL')" class="p-2 text-xs bg-slate-800 hover:bg-slate-700 rounded border border-slate-700 text-slate-200 font-medium text-left">
+                            💚 Normal Baseline
+                        </button>
+                        <button onclick="setScenario('ARRHYTHMIA')" class="p-2 text-xs bg-slate-800 hover:bg-slate-700 rounded border border-slate-700 text-rose-300 font-medium text-left">
+                            ⚠️ Tachycardia / Risk
+                        </button>
+                        <button onclick="setScenario('HYPOXIA')" class="p-2 text-xs bg-slate-800 hover:bg-slate-700 rounded border border-slate-700 text-sky-300 font-medium text-left">
+                            🫁 Hypoxia (SpO2 Low)
+                        </button>
+                        <button onclick="setScenario('LEAD_OFF')" class="p-2 text-xs bg-slate-800 hover:bg-slate-700 rounded border border-slate-700 text-amber-300 font-medium text-left">
+                            ⚡ Lead-Off Fault
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Battery & Energy Analytics -->
+                <div class="bg-slate-900/80 border border-slate-800 rounded-xl p-4 space-y-3">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Power Analytics</span>
+                        <i data-lucide="battery-charging" class="w-4 h-4 text-emerald-400"></i>
+                    </div>
+
+                    <div class="space-y-1">
+                        <div class="flex justify-between text-xs">
+                            <span class="text-slate-400">Battery Level</span>
+                            <span id="battery-percent" class="font-mono text-slate-200 font-bold">98.4%</span>
+                        </div>
+                        <div class="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                            <div id="battery-bar" class="bg-emerald-500 h-full w-[98.4%] transition-all duration-300"></div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-2 text-xs pt-1">
+                        <div class="bg-slate-950 p-2 rounded border border-slate-800">
+                            <span class="text-slate-500 block text-[10px]">CURRENT DRAW</span>
+                            <span id="power-draw" class="font-mono text-amber-400 font-semibold">12.4 mA</span>
+                        </div>
+                        <div class="bg-slate-950 p-2 rounded border border-slate-800">
+                            <span class="text-slate-500 block text-[10px]">EST. RUNTIME</span>
+                            <span id="runtime-est" class="font-mono text-emerald-400 font-semibold">41.2 Hours</span>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Terminal Log -->
+            <div class="bg-slate-900/80 border border-slate-800 rounded-xl p-3 h-36 flex flex-col">
+                <div class="flex items-center justify-between pb-2 border-b border-slate-800">
+                    <span class="text-[10px] font-mono text-slate-400">SERIAL LOG / RX-TX</span>
+                    <button onclick="clearLogs()" class="text-[10px] text-slate-500 hover:text-slate-300">Clear</button>
+                </div>
+                <div id="serial-log" class="flex-1 font-mono text-[11px] text-slate-400 overflow-y-auto mt-2 space-y-1">
+                    <div class="text-emerald-500/80">[SYSTEM] Initialization complete. Ready.</div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Center Dashboard Area -->
+        <main class="flex-1 flex flex-col overflow-hidden p-4 space-y-4">
+            
+            <!-- Vitals Summary Cards -->
+            <div class="grid grid-cols-4 gap-4">
+                
+                <!-- Heart Rate Card -->
+                <div class="bg-slate-900/70 border border-slate-800 rounded-xl p-4 flex items-center justify-between relative overflow-hidden">
+                    <div class="space-y-1">
+                        <span class="text-xs font-medium text-slate-400 flex items-center gap-1.5">
+                            <i data-lucide="heart" class="w-3.5 h-3.5 text-rose-500"></i> HEART RATE
+                        </span>
+                        <div class="flex items-baseline space-x-2">
+                            <span id="val-hr" class="text-3xl font-bold font-mono text-slate-100">72</span>
+                            <span class="text-xs text-slate-400">BPM</span>
+                        </div>
+                        <span id="val-hr-status" class="text-[10px] text-emerald-400 font-mono">NORMAL SINUS</span>
+                    </div>
+                    <div id="hr-pulse-icon" class="vital-pulse p-3 bg-rose-500/10 border border-rose-500/20 rounded-full text-rose-400">
+                        <i data-lucide="heart-pulse" class="w-6 h-6"></i>
+                    </div>
+                </div>
+
+                <!-- SpO2 Card -->
+                <div class="bg-slate-900/70 border border-slate-800 rounded-xl p-4 flex items-center justify-between">
+                    <div class="space-y-1">
+                        <span class="text-xs font-medium text-slate-400 flex items-center gap-1.5">
+                            <i data-lucide="droplet" class="w-3.5 h-3.5 text-sky-400"></i> SpO2 LEVEL
+                        </span>
+                        <div class="flex items-baseline space-x-2">
+                            <span id="val-spo2" class="text-3xl font-bold font-mono text-slate-100">98</span>
+                            <span class="text-xs text-slate-400">%</span>
+                        </div>
+                        <span id="val-spo2-status" class="text-[10px] text-emerald-400 font-mono">OPTIMAL</span>
+                    </div>
+                    <div class="p-3 bg-sky-500/10 border border-sky-500/20 rounded-full text-sky-400">
+                        <i data-lucide="activity" class="w-6 h-6"></i>
+                    </div>
+                </div>
+
+                <!-- Lead Off / Electrodes Status -->
+                <div class="bg-slate-900/70 border border-slate-800 rounded-xl p-4 flex items-center justify-between">
+                    <div class="space-y-1">
+                        <span class="text-xs font-medium text-slate-400 flex items-center gap-1.5">
+                            <i data-lucide="shield-alert" class="w-3.5 h-3.5 text-amber-400"></i> LEAD INTEGRITY
+                        </span>
+                        <div class="flex items-baseline space-x-2">
+                            <span id="val-lead" class="text-2xl font-bold font-mono text-emerald-400">CONNECTED</span>
+                        </div>
+                        <span id="val-lead-detail" class="text-[10px] text-slate-400 font-mono">IMPEDANCE OK</span>
+                    </div>
+                    <div id="lead-status-icon" class="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-full text-emerald-400">
+                        <i data-lucide="check-circle-2" class="w-6 h-6"></i>
+                    </div>
+                </div>
+
+                <!-- STM32 Sampling Frequency -->
+                <div class="bg-slate-900/70 border border-slate-800 rounded-xl p-4 flex items-center justify-between">
+                    <div class="space-y-1">
+                        <span class="text-xs font-medium text-slate-400 flex items-center gap-1.5">
+                            <i data-lucide="gauge" class="w-3.5 h-3.5 text-emerald-400"></i> SAMPLING RATE
+                        </span>
+                        <div class="flex items-baseline space-x-2">
+                            <span id="val-rate" class="text-3xl font-bold font-mono text-emerald-400">50</span>
+                            <span class="text-xs text-slate-400">Hz</span>
+                        </div>
+                        <span id="val-rate-mode" class="text-[10px] text-slate-400 font-mono">MODE 1 (STANDARD)</span>
+                    </div>
+                    <div class="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-full text-emerald-400">
+                        <i data-lucide="zap" class="w-6 h-6"></i>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Waveform Canvases -->
+            <div class="flex-1 grid grid-rows-2 gap-4 min-h-0">
+                
+                <!-- ECG Canvas Section -->
+                <div class="bg-slate-900/80 border border-slate-800 rounded-xl p-3 flex flex-col relative canvas-container overflow-hidden">
+                    <div class="flex items-center justify-between pb-2 z-10">
+                        <div class="flex items-center space-x-2">
+                            <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                            <span class="text-xs font-semibold text-slate-200 tracking-wider">ELECTROCARDIOGRAM (ECG - LEAD I)</span>
+                        </div>
+                        <span class="text-[10px] font-mono text-slate-400 bg-slate-950/80 px-2 py-0.5 rounded border border-slate-800">
+                            GAIN: 10mm/mV | SPEED: 25mm/s
+                        </span>
+                    </div>
+                    <div class="flex-1 relative w-full h-full">
+                        <canvas id="ecg-canvas" class="absolute inset-0 w-full h-full"></canvas>
+                    </div>
+                </div>
+
+                <!-- PPG Canvas Section -->
+                <div class="bg-slate-900/80 border border-slate-800 rounded-xl p-3 flex flex-col relative canvas-container overflow-hidden">
+                    <div class="flex items-center justify-between pb-2 z-10">
+                        <div class="flex items-center space-x-2">
+                            <span class="w-2 h-2 rounded-full bg-sky-400"></span>
+                            <span class="text-xs font-semibold text-slate-200 tracking-wider">PHOTOPLETHYSMOGRAM (PPG - PULSE)</span>
+                        </div>
+                        <span class="text-[10px] font-mono text-slate-400 bg-slate-950/80 px-2 py-0.5 rounded border border-slate-800">
+                            IR-RED RATIO | SPO2 ESTIMATE
+                        </span>
+                    </div>
+                    <div class="flex-1 relative w-full h-full">
+                        <canvas id="ppg-canvas" class="absolute inset-0 w-full h-full"></canvas>
+                    </div>
+                </div>
+
+            </div>
+
+        </main>
+    </div>
+
+    <script>
+        // ====================================================================
+        // Global Application State
+        // ====================================================================
+        const state = {
+            serialPort: null,
+            reader: null,
+            writer: null,
+            isConnected: false,
+            buffer: "",
+            
+            // Vitals Data
+            heartRate: 72,
+            leadOff: 0,
+            spO2: 98,
+            samplingSpeed: 1, // 0: 10Hz, 1: 50Hz, 2: 250Hz, 3: 500Hz
+            samplingHz: 50,
+            
+            // RL Controller Mode
+            rlMode: 'AUTO', // 'AUTO' or 'MANUAL_x'
+            rlState: 'NORMAL_STABLE',
+            
+            // Battery Analytics
+            batteryLevel: 98.4,
+            powerDrawMa: 12.4,
+            
+            // Simulation Fallback
+            scenario: 'NORMAL',
+            simPhase: 0
+        };
+
+        const SPEED_CONFIGS = {
+            0: { hz: 10,  command: '0', currentMa: 4.2,  label: "ULTRA LOW POWER" },
+            1: { hz: 50,  command: '1', currentMa: 12.4, label: "STANDARD MONITOR" },
+            2: { hz: 250, command: '2', currentMa: 28.5, label: "HIGH FIDELITY" },
+            3: { hz: 500, command: '3', currentMa: 45.0, label: "BURST DIAGNOSTIC" }
+        };
+
+        // Initialize Icons
+        lucide.createIcons();
+
+        // ====================================================================
+        // Web Serial API Implementation for Direct STM32 USB-UART Link
+        // ====================================================================
+        async function toggleSerialConnection() {
+            if (state.isConnected) {
+                await disconnectSerial();
+            } else {
+                await connectSerial();
+            }
+        }
+
+        async function connectSerial() {
+            if (!("serial" in navigator)) {
+                logToTerminal("ERROR: Web Serial API not supported in this browser. Use Chrome, Edge, or Opera.", "rose");
+                alert("Web Serial API is not supported by your browser. Please use Google Chrome or Microsoft Edge.");
+                return;
+            }
+
+            try {
+                // Prompt user to select STM32 COM Port
+                state.serialPort = await navigator.serial.requestPort();
+                await state.serialPort.open({ baudRate: 115200 });
+
+                state.isConnected = true;
+                updateConnectionUI(true);
+                logToTerminal("SUCCESS: Connected to STM32 @ 115200 Baud", "emerald");
+
+                // Start continuous read loop
+                readSerialData();
+            } catch (err) {
+                logToTerminal(`CONNECTION FAILED: ${err.message}`, "rose");
+                console.error("Serial connection error:", err);
+            }
+        }
+
+        async function disconnectSerial() {
+            try {
+                if (state.reader) {
+                    await state.reader.cancel();
+                }
+                if (state.serialPort) {
+                    await state.serialPort.close();
+                }
+            } catch (err) {
+                console.error("Disconnect Error:", err);
+            } finally {
+                state.isConnected = false;
+                state.serialPort = null;
+                state.reader = null;
+                state.writer = null;
+                updateConnectionUI(false);
+                logToTerminal("SYSTEM: Disconnected from Serial Port", "amber");
+            }
+        }
+
+        async function readSerialData() {
+            const textDecoder = new TextDecoderStream();
+            const readableStreamClosed = state.serialPort.readable.pipeTo(textDecoder.writable);
+            state.reader = textDecoder.readable.getReader();
+
+            try {
+                while (true) {
+                    const { value, done } = await state.reader.read();
+                    if (done) {
+                        break;
+                    }
+                    if (value) {
+                        state.buffer += value;
+                        processBuffer();
+                    }
+                }
+            } catch (error) {
+                logToTerminal(`RX ERROR: ${error.message}`, "rose");
+            } finally {
+                state.reader.releaseLock();
+            }
+        }
+
+        // Parse incoming UART data stream (Expected format: "DATA,<heartRate>,<leadOff>\r\n")
+        function processBuffer() {
+            const lines = state.buffer.split("\n");
+            // Keep incomplete line in buffer
+            state.buffer = lines.pop();
+
+            for (let line of lines) {
+                line = line.trim();
+                if (line.startsWith("DATA,")) {
+                    const parts = line.split(",");
+                    if (parts.length >= 3) {
+                        const hr = parseInt(parts[1], 10);
+                        const lead = parseInt(parts[2], 10);
+
+                        if (!isNaN(hr)) state.heartRate = hr;
+                        if (!isNaN(lead)) state.leadOff = lead;
+
+                        logToTerminal(`RX: HR=${state.heartRate} | LeadOff=${state.leadOff}`, "sky");
+                        
+                        // Execute Decision Engine based on live telemetry
+                        runRLDecisionEngine();
+                    }
+                }
+            }
+        }
+
+        // Send Command Byte back to STM32 over Web Serial
+        async function sendCommandToSTM32(commandChar) {
+            if (!state.isConnected || !state.serialPort) return;
+
+            try {
+                const encoder = new TextEncoder();
+                const writer = state.serialPort.writable.getWriter();
+                await writer.write(encoder.encode(commandChar + "\n"));
+                writer.releaseLock();
+                logToTerminal(`TX -> STM32: Sent Command '${commandChar}'`, "emerald");
+            } catch (err) {
+                logToTerminal(`TX ERROR: Failed to send command '${commandChar}'`, "rose");
+            }
+        }
+
+        // ====================================================================
+        // Reinforcement Learning / Decision Engine Logic
+        // ====================================================================
+        function runRLDecisionEngine() {
+            if (state.rlMode !== 'AUTO') return;
+
+            let targetSpeed = 1; // Default to Standard (50Hz)
+            let stateLabel = "NORMAL_STABLE";
+
+            // State & Risk Evaluation
+            if (state.leadOff === 1) {
+                // Lead-Off detected: Dropping to Low Power (10Hz) to save energy until reconnected
+                targetSpeed = 0;
+                stateLabel = "FAULT_LEAD_OFF";
+            } else if (state.heartRate > 110 || state.heartRate < 50 || state.spO2 < 92) {
+                // High Risk Condition detected: Switch to High Fidelity / Burst mode
+                targetSpeed = (state.heartRate > 130) ? 3 : 2;
+                stateLabel = "CRITICAL_RISK";
+            } else if (state.heartRate > 90) {
+                // Moderate Activity / Mild Elevation
+                targetSpeed = 2;
+                stateLabel = "MODERATE_ELEVATION";
+            } else {
+                // Resting baseline
+                targetSpeed = 1;
+                stateLabel = "NORMAL_STABLE";
+            }
+
+            state.rlState = stateLabel;
+            document.getElementById('rl-state-display').textContent = stateLabel;
+
+            // Trigger speed transition if required
+            if (targetSpeed !== state.samplingSpeed) {
+                applySamplingSpeed(targetSpeed);
+            }
+        }
+
+        function changeRLMode(val) {
+            state.rlMode = val;
+            if (val.startsWith("MANUAL_")) {
+                const speed = parseInt(val.replace("MANUAL_", ""), 10);
+                applySamplingSpeed(speed);
+            } else {
+                runRLDecisionEngine();
+            }
+        }
+
+        function applySamplingSpeed(speedIndex) {
+            state.samplingSpeed = speedIndex;
+            const config = SPEED_CONFIGS[speedIndex];
+            state.samplingHz = config.hz;
+            state.powerDrawMa = config.currentMa;
+
+            // UI Updates
+            document.getElementById('tx-command-display').textContent = `'${config.command}' (${config.hz}Hz)`;
+            document.getElementById('val-rate').textContent = config.hz;
+            document.getElementById('val-rate-mode').textContent = `MODE ${speedIndex} (${config.label})`;
+            document.getElementById('power-draw').textContent = `${config.currentMa.toFixed(1)} mA`;
+
+            // Send byte to STM32 hardware
+            sendCommandToSTM32(config.command);
+        }
+
+        // ====================================================================
+        // Simulation Fallback Mode (Runs when no USB hardware is attached)
+        // ====================================================================
+        function setScenario(scenarioType) {
+            state.scenario = scenarioType;
+            logToTerminal(`SIMULATOR: Activated Scenario [${scenarioType}]`, "amber");
+        }
+
+        function updateSimulation() {
+            if (state.isConnected) return; // Prioritize real STM32 data
+
+            state.simPhase += 0.05;
+
+            switch (state.scenario) {
+                case 'ARRHYTHMIA':
+                    state.heartRate = Math.round(125 + Math.sin(state.simPhase * 2) * 20);
+                    state.spO2 = 95;
+                    state.leadOff = 0;
+                    break;
+                case 'HYPOXIA':
+                    state.heartRate = 88;
+                    state.spO2 = Math.max(82, Math.round(89 - Math.abs(Math.sin(state.simPhase)) * 8));
+                    state.leadOff = 0;
+                    break;
+                case 'LEAD_OFF':
+                    state.leadOff = 1;
+                    state.heartRate = 0;
+                    break;
+                case 'NORMAL':
+                default:
+                    state.heartRate = Math.round(72 + Math.sin(state.simPhase * 0.5) * 4);
+                    state.spO2 = 98;
+                    state.leadOff = 0;
+                    break;
+            }
+
+            runRLDecisionEngine();
+        }
+
+        // ====================================================================
+        // Canvas Rendering Engine (ECG & PPG Waveforms)
+        // ====================================================================
+        const ecgCanvas = document.getElementById('ecg-canvas');
+        const ppgCanvas = document.getElementById('ppg-canvas');
+        const ecgCtx = ecgCanvas.getContext('2d');
+        const ppgCtx = ppgCanvas.getContext('2d');
+
+        let ecgData = [];
+        let ppgData = [];
+        let maxSamples = 500;
+
+        function resizeCanvases() {
+            [ecgCanvas, ppgCanvas].forEach(canvas => {
+                const rect = canvas.parentElement.getBoundingClientRect();
+                canvas.width = rect.width;
+                canvas.height = rect.height;
+            });
+            maxSamples = Math.floor(ecgCanvas.width / 2);
+        }
+
+        window.addEventListener('resize', resizeCanvases);
+        resizeCanvases();
+
+        // Synthetic Waveform Generators
+        function getECGSample(t, hr, leadOff) {
+            if (leadOff === 1) return (Math.random() - 0.5) * 0.1; // Noise on lead-off
+
+            const period = 60 / Math.max(hr, 30);
+            const cycle = (t % period) / period;
+
+            // P-Q-R-S-T wave mathematical approximation
+            if (cycle > 0.1 && cycle < 0.18) return Math.sin((cycle - 0.1) / 0.08 * Math.PI) * 0.15; // P Wave
+            if (cycle >= 0.28 && cycle < 0.30) return -0.15; // Q Wave
+            if (cycle >= 0.30 && cycle < 0.35) return 1.2 * Math.sin((cycle - 0.30) / 0.05 * Math.PI); // R Spike
+            if (cycle >= 0.35 && cycle < 0.38) return -0.3; // S Wave
+            if (cycle >= 0.50 && cycle < 0.65) return Math.sin((cycle - 0.50) / 0.15 * Math.PI) * 0.25; // T Wave
+
+            return (Math.random() - 0.5) * 0.02; // Baseline noise
+        }
+
+        function getPPGSample(t, hr, leadOff) {
+            if (leadOff === 1) return 0;
+
+            const period = 60 / Math.max(hr, 30);
+            const cycle = (t % period) / period;
+
+            // Systolic & Dicrotic Notch Pulse Waveform
+            if (cycle < 0.4) return Math.sin(cycle / 0.4 * Math.PI);
+            if (cycle >= 0.4 && cycle < 0.6) return 0.3 * Math.sin((cycle - 0.4) / 0.2 * Math.PI);
+
+            return 0;
+        }
+
+        let sampleTime = 0;
+
+        function drawWaveforms() {
+            // Push new data points based on current sampling speed
+            const samplesToAdd = Math.ceil(state.samplingHz / 50);
+            for (let i = 0; i < samplesToAdd; i++) {
+                sampleTime += 0.02;
+                ecgData.push(getECGSample(sampleTime, state.heartRate, state.leadOff));
+                ppgData.push(getPPGSample(sampleTime, state.heartRate, state.leadOff));
+
+                if (ecgData.length > maxSamples) ecgData.shift();
+                if (ppgData.length > maxSamples) ppgData.shift();
+            }
+
+            // Render ECG Canvas
+            ecgCtx.clearRect(0, 0, ecgCanvas.width, ecgCanvas.height);
+            ecgCtx.beginPath();
+            ecgCtx.strokeStyle = state.leadOff === 1 ? '#f43f5e' : '#10b981';
+            ecgCtx.lineWidth = 2;
+
+            const midYECG = ecgCanvas.height / 2;
+            const scaleYECG = ecgCanvas.height * 0.35;
+
+            for (let i = 0; i < ecgData.length; i++) {
+                const x = (i / maxSamples) * ecgCanvas.width;
+                const y = midYECG - (ecgData[i] * scaleYECG);
+                if (i === 0) ecgCtx.moveTo(x, y);
+                else ecgCtx.lineTo(x, y);
+            }
+            ecgCtx.stroke();
+
+            // Render PPG Canvas
+            ppgCtx.clearRect(0, 0, ppgCanvas.width, ppgCanvas.height);
+            ppgCtx.beginPath();
+            ppgCtx.strokeStyle = '#38bdf8';
+            ppgCtx.lineWidth = 2;
+
+            const midYPPG = ppgCanvas.height * 0.8;
+            const scaleYPPG = ppgCanvas.height * 0.6;
+
+            for (let i = 0; i < ppgData.length; i++) {
+                const x = (i / maxSamples) * ppgCanvas.width;
+                const y = midYPPG - (ppgData[i] * scaleYPPG);
+                if (i === 0) ppgCtx.moveTo(x, y);
+                else ppgCtx.lineTo(x, y);
+            }
+            ppgCtx.stroke();
+
+            requestAnimationFrame(drawWaveforms);
+        }
+
+        // ====================================================================
+        // UI & Battery Analytics Render Loop
+        // ====================================================================
+        function updateDashboardUI() {
+            updateSimulation();
+
+            // Vitals Display
+            document.getElementById('val-hr').textContent = state.leadOff === 1 ? '--' : state.heartRate;
+            document.getElementById('val-spo2').textContent = state.leadOff === 1 ? '--' : state.spO2;
+
+            // Status Labels
+            const hrStatus = document.getElementById('val-hr-status');
+            if (state.leadOff === 1) {
+                hrStatus.textContent = "SIGNAL LOST";
+                hrStatus.className = "text-[10px] text-rose-400 font-mono";
+            } else if (state.heartRate > 100) {
+                hrStatus.textContent = "TACHYCARDIA ALERT";
+                hrStatus.className = "text-[10px] text-rose-400 font-mono";
+            } else {
+                hrStatus.textContent = "NORMAL SINUS";
+                hrStatus.className = "text-[10px] text-emerald-400 font-mono";
+            }
+
+            // Lead Integrity Indicator
+            const leadVal = document.getElementById('val-lead');
+            const leadIcon = document.getElementById('lead-status-icon');
+            if (state.leadOff === 1) {
+                leadVal.textContent = "DISCONNECTED";
+                leadVal.className = "text-2xl font-bold font-mono text-rose-500";
+                leadIcon.className = "p-3 bg-rose-500/10 border border-rose-500/20 rounded-full text-rose-400";
+            } else {
+                leadVal.textContent = "CONNECTED";
+                leadVal.className = "text-2xl font-bold font-mono text-emerald-400";
+                leadIcon.className = "p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-full text-emerald-400";
+            }
+
+            // Battery Discharge Calculation
+            // Capacity: 500mAh LiPo Battery
+            const capacityMah = 500;
+            const dischargeRatePerSec = (state.powerDrawMa / 3600) * 0.1;
+            state.batteryLevel = Math.max(0, state.batteryLevel - (dischargeRatePerSec / capacityMah) * 100);
+
+            const hoursRemaining = (capacityMah * (state.batteryLevel / 100)) / state.powerDrawMa;
+
+            document.getElementById('battery-percent').textContent = `${state.batteryLevel.toFixed(1)}%`;
+            document.getElementById('battery-bar').style.width = `${state.batteryLevel}%`;
+            document.getElementById('runtime-est').textContent = `${hoursRemaining.toFixed(1)} Hours`;
+        }
+
+        // UI Helpers
+        function updateConnectionUI(connected) {
+            const dot = document.getElementById('status-dot');
+            const text = document.getElementById('status-text');
+            const btnText = document.getElementById('btn-connect-text');
+
+            if (connected) {
+                dot.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 vital-pulse";
+                text.textContent = "STM32 Connected";
+                btnText.textContent = "Disconnect STM32";
+            } else {
+                dot.className = "w-2.5 h-2.5 rounded-full bg-amber-500";
+                text.textContent = "Disconnected (Sim Mode)";
+                btnText.textContent = "Connect STM32";
+            }
+        }
+
+        function logToTerminal(msg, color = "slate") {
+            const logBox = document.getElementById('serial-log');
+            const entry = document.createElement('div');
+            
+            const colorMap = {
+                emerald: "text-emerald-400",
+                rose: "text-rose-400",
+                sky: "text-sky-400",
+                amber: "text-amber-400",
+                slate: "text-slate-400"
+            };
+
+            entry.className = `${colorMap[color] || 'text-slate-400'}`;
+            const time = new Date().toLocaleTimeString().split(' ')[0];
+            entry.textContent = `[${time}] ${msg}`;
+
+            logBox.appendChild(entry);
+            logBox.scrollTop = logBox.scrollHeight;
+        }
+
+        function clearLogs() {
+            document.getElementById('serial-log').innerHTML = '';
+        }
+
+        // ====================================================================
+        // Boot / Startup Initialization
+        // ====================================================================
+        window.onload = () => {
+            // Start Canvas Waveform Loop
+            requestAnimationFrame(drawWaveforms);
+
+            // Start Dashboard UI & Analytics interval
+            setInterval(updateDashboardUI, 200);
+
+            logToTerminal("SYSTEM: UI Dashboard Loaded. Select 'Connect STM32' to begin Web Serial.", "emerald");
+        };
+    </script>
+</body>
+</html>
