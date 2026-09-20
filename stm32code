@@ -1,0 +1,155 @@
+/* USER CODE BEGIN Header /
+/*
+
+@file           : main.c
+
+@brief          : BIOMED-RL STM32 Firmware with Q-Learning Policy & UART
+
+/
+/ USER CODE END Header */
+
+#include "main.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+
+/* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+UART_HandleTypeDef huart2;
+
+uint8_t rx_byte = 0;
+uint32_t sampling_delay_ms = 20; // Default 50 Hz (20ms interval)
+uint32_t raw_adc_value = 0;
+uint8_t lead_off = 0;
+uint32_t heart_rate = 72;
+
+/* Q-Learning Table and States */
+#define NUM_STATES 4
+#define NUM_ACTIONS 4
+
+// States: 0=NORMAL, 1=ELEVATED, 2=CRITICAL, 3=LEAD_OFF
+// Actions: 0=10Hz, 1=50Hz, 2=250Hz, 3=500Hz
+float q_table[NUM_STATES][NUM_ACTIONS] = {
+{1.0, 3.0, 0.5, 0.0}, // Normal -> prefer 50Hz
+{0.0, 1.0, 4.0, 2.0}, // Elevated -> prefer 250Hz
+{0.0, 0.0, 2.0, 5.0}, // Critical -> prefer 500Hz
+{5.0, 0.5, 0.0, 0.0}  // Lead Off -> prefer 10Hz
+};
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_ADC1_Init(void);
+static void MX_USART2_UART_Init(void);
+void ProcessRxCommand(uint8_t cmd);
+
+int main(void)
+{
+HAL_Init();
+SystemClock_Config();
+
+MX_GPIO_Init();
+MX_ADC1_Init();
+MX_USART2_UART_Init();
+
+// Enable UART RX Interrupt
+HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
+
+char tx_buffer[64];
+
+while (1)
+{
+    // 1. Check Lead-Off Detection Pins (AD8232 LO+ / LO-)
+    GPIO_PinState lo_minus = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_1);
+    GPIO_PinState lo_plus = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_4);
+    lead_off = (lo_minus == GPIO_PIN_SET || lo_plus == GPIO_PIN_SET) ? 1 : 0;
+
+    // 2. Read Analog Signal from AD8232 via ADC
+    HAL_ADC_Start(&hadc1);
+    if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
+    {
+        raw_adc_value = HAL_ADC_GetValue(&hadc1);
+    }
+    HAL_ADC_Stop(&hadc1);
+
+    // Simple Heart Rate Calculation Approximation
+    if (lead_off == 1) {
+        heart_rate = 0;
+    } else {
+        heart_rate = 60 + (raw_adc_value % 40); // Baseline demo logic
+    }
+
+    // 3. Format and Send Telemetry over UART
+    int len = snprintf(tx_buffer, sizeof(tx_buffer), "DATA,%lu,%d\r\n", heart_rate, lead_off);
+    HAL_UART_Transmit(&huart2, (uint8_t*)tx_buffer, len, 50);
+
+    // 4. Sleep according to current sampling rate delay
+    HAL_Delay(sampling_delay_ms);
+}
+
+
+}
+
+/* UART Interrupt Callback (Receives commands '0'-'3' from Web Dashboard) */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+if (huart->Instance == USART2)
+{
+ProcessRxCommand(rx_byte);
+HAL_UART_Receive_IT(&huart2, &rx_byte, 1); // Re-enable RX Interrupt
+}
+}
+
+void ProcessRxCommand(uint8_t cmd)
+{
+switch (cmd)
+{
+case '0': sampling_delay_ms = 100; break; // 10 Hz
+case '1': sampling_delay_ms = 20;  break; // 50 Hz
+case '2': sampling_delay_ms = 4;   break; // 250 Hz
+case '3': sampling_delay_ms = 2;   break; // 500 Hz
+default: break;
+}
+}
+
+/* Peripheral Initializations */
+static void MX_USART2_UART_Init(void)
+{
+huart2.Instance = USART2;
+huart2.Init.BaudRate = 115200;
+huart2.Init.WordLength = UART_WORDLENGTH_8B;
+huart2.Init.StopBits = UART_STOPBITS_1;
+huart2.Init.Parity = UART_PARITY_NONE;
+huart2.Init.Mode = UART_MODE_TX_RX;
+huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+HAL_UART_Init(&huart2);
+}
+
+static void MX_ADC1_Init(void)
+{
+ADC_ChannelConfTypeDef sConfig = {0};
+hadc1.Instance = ADC1;
+HAL_ADC_Init(&hadc1);
+sConfig.Channel = ADC_CHANNEL_0; // PA0
+sConfig.Rank = 1;
+sConfig.SamplingTime = ADC_SAMPLETIME_15CYCLES;
+HAL_ADC_ConfigChannel(&hadc1, &sConfig);
+}
+
+static void MX_GPIO_Init(void)
+{
+GPIO_InitTypeDef GPIO_InitStruct = {0};
+__HAL_RCC_GPIOA_CLK_ENABLE();
+
+/* LO- on PA1, LO+ on PA4 */
+GPIO_InitStruct.Pin = GPIO_PIN_1 | GPIO_PIN_4;
+GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+GPIO_InitStruct.Pull = GPIO_NOPULL;
+HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+
+}
+
+void SystemClock_Config(void) {}
+void Error_Handler(void) { while(1); }
